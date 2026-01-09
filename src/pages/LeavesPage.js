@@ -89,7 +89,7 @@ export default function LeavesPage() {
   const theme = useTheme();
 
   // column width for date columns (used to calculate scroll offsets)
-  const DATE_COL_WIDTH = 32; // reduced to make rows narrower
+  const DATE_COL_WIDTH = 64; // reduced to make rows narrower
 
   // build chronological list of all project dates (oldest -> newest)
   const allDatesChron = useMemo(() => {
@@ -153,7 +153,7 @@ export default function LeavesPage() {
   const leftColumnsConfig = useMemo(() => {
     // base name column always present
     const cols = [];
-    const nameWidth = leftCompact ? 150 : 120;
+    const nameWidth = leftCompact ? 200 : 110;
     cols.push({ key: "member", left: 0, width: nameWidth });
 
     let left = nameWidth;
@@ -669,16 +669,13 @@ export default function LeavesPage() {
                       position: "sticky",
                       left: 0,
                       zIndex: 4,
-                      minWidth: leftCompact ? 150 : 120,
-                      maxWidth: leftCompact ? 150 : 120,
+                      minWidth: leftCompact ? 200 : 110,
                       bgcolor: "background.paper",
                       borderRight: "1px solid #e6e6e6",
                       fontWeight: 700,
                       fontSize: 13,
                       whiteSpace: "normal",
                       wordWrap: "break-word",
-                      overflowWrap: "break-word",
-                      overflow: "hidden",
                     }}
                   >
                     Member
@@ -808,30 +805,16 @@ export default function LeavesPage() {
                         position: "sticky",
                         left: 0,
                         zIndex: 3,
-                        minWidth: leftCompact ? 150 : 120,
-                        maxWidth: leftCompact ? 150 : 120,
+                        minWidth: leftCompact ? 200 : 110,
                         bgcolor: "background.paper",
                         borderRight: "1px solid #e6e6e6",
                         py: 1.2,
                         fontSize: 12,
                         whiteSpace: "normal",
                         wordWrap: "break-word",
-                        overflowWrap: "break-word",
-                        overflow: "hidden",
                       }}
                     >
-                      <Typography 
-                        variant="body2" 
-                        fontWeight={600} 
-                        sx={{ 
-                          fontSize: 12,
-                          wordBreak: "break-word",
-                          overflowWrap: "break-word",
-                          hyphens: "auto",
-                        }}
-                      >
-                        {m.name}
-                      </Typography>
+                      <Typography variant="body2" fontWeight={600} sx={{ fontSize: 12 }}>{m.name}</Typography>
                     </TableCell>
 
                     {/* Role */}
