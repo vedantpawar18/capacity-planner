@@ -1,0 +1,549 @@
+// src/pages/ProjectionsPage.js
+import React, { useMemo, useState } from "react";
+import {
+  Box,
+  Card,
+  CardContent,
+  Typography,
+  useTheme,
+  Table,
+  TableHead,
+  TableRow,
+  TableCell,
+  TableBody,
+  IconButton,
+  Collapse,
+  TableContainer,
+  Paper,
+  TextField,
+  Button,
+  Stack,
+  Chip,
+} from "@mui/material";
+import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
+import InsightsIcon from "@mui/icons-material/Insights";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import { useSelector } from "react-redux";
+import { useNavigate } from "react-router-dom";
+import {
+  formatDDMMYYYY,
+  parseDDMMYYYY,
+  isWeekend,
+  generateDateRange,
+} from "../utils/dateUtils";
+import { selectSelectedProject } from "../features/projectsSlice";
+
+// baseline default rates if a role doesn't have a stored value
+const BASE_RATE_BY_ROLE = new Map([
+  ["Lead Senior Engineer - Mobile Dev", 20],
+  ["Mid Level Engineer - Mobile Dev", 10],
+  ["Senior Engineer - Mobile Dev", 15],
+  ["Senior Quality Engineer", 15],
+  ["Backend Engineer", 18],
+  ["Frontend Engineer", 17],
+]);
+
+function monthLabel(monthIndex, year) {
+  return new Date(year, monthIndex, 1).toLocaleString(undefined, {
+    month: "short",
+    year: "numeric",
+  });
+}
+
+export default function ProjectionsPage() {
+  const project = useSelector(selectSelectedProject);
+  const holidaysState = useSelector((s) => s.holidays);
+  const navigate = useNavigate();
+
+  // stable members array
+  const members = project?.members || [];
+
+  // derive unique roles from landing page (project members)
+  const uniqueRoles = useMemo(
+    () => Array.from(new Set(members.map((m) => m.role))).filter(Boolean),
+    [members]
+  );
+
+  // hourlyRates state (editable). Stored as array of [role, rate]
+  const [hourlyRatesArr, setHourlyRatesArr] = useState(() =>
+    uniqueRoles.length
+      ? uniqueRoles.map((role) => [
+          role,
+          BASE_RATE_BY_ROLE.get(role) ?? 15,
+        ])
+      : [["Default Role", 15]]
+  );
+
+  // if roles change (project changed), realign rate card with new unique roles
+  React.useEffect(() => {
+    if (!uniqueRoles.length) return;
+    setHourlyRatesArr((prev) => {
+      const prevMap = new Map(prev);
+      return uniqueRoles.map((role) => [
+        role,
+        prevMap.get(role) ?? BASE_RATE_BY_ROLE.get(role) ?? 15,
+      ]);
+    });
+  }, [uniqueRoles]);
+
+  // collapse state for Rate Card (closed by default to keep area small)
+  const [rateCardOpen, setRateCardOpen] = useState(false);
+
+  // UI state for expanded member row
+  const [expandedMemberId, setExpandedMemberId] = useState(null);
+  const toggleExpand = (id) => setExpandedMemberId((prev) => (prev === id ? null : id));
+
+  const theme = useTheme();
+
+  // helper: holiday check
+  const isHolidayForLocation = (location, dateStr) => {
+    const byLocation = holidaysState?.byLocation || {};
+    const arr = byLocation[location] || [];
+    return arr.some((h) => h.date === dateStr);
+  };
+
+  // helper: stored leave
+  const getStoredLeave = (memberId, dateStr) => {
+    return project?.leaves?.[memberId]?.[dateStr];
+  };
+
+  // Build monthsToShow from project.startDate -> project.endDate (inclusive).
+  const monthsToShow = useMemo(() => {
+    if (!project) return [];
+    const start = parseDDMMYYYY(project.startDate);
+    const end = parseDDMMYYYY(project.endDate);
+    if (!start || !end) return [];
+    const months = [];
+    let curYear = start.getFullYear();
+    let curMonth = start.getMonth();
+    const endYear = end.getFullYear();
+    const endMonth = end.getMonth();
+    while (curYear < endYear || (curYear === endYear && curMonth <= endMonth)) {
+      months.push({
+        label: monthLabel(curMonth, curYear),
+        year: curYear,
+        monthIndex: curMonth,
+      });
+      curMonth++;
+      if (curMonth > 11) {
+        curMonth = 0;
+        curYear++;
+      }
+    }
+    return months;
+  }, [project]);
+
+  // Precompute list of dates for each month (map: label -> [Date,...])
+  const monthDatesMap = useMemo(() => {
+    const map = {};
+    monthsToShow.forEach((m) => {
+      const first = new Date(m.year, m.monthIndex, 1);
+      const last = new Date(m.year, m.monthIndex + 1, 0);
+      const dates = generateDateRange(
+        `${String(first.getDate()).padStart(2, "0")}/${String(first.getMonth() + 1).padStart(
+          2,
+          "0"
+        )}/${first.getFullYear()}`,
+        `${String(last.getDate()).padStart(2, "0")}/${String(last.getMonth() + 1).padStart(
+          2,
+          "0"
+        )}/${last.getFullYear()}`
+      );
+      map[m.label] = dates;
+    });
+    return map;
+  }, [monthsToShow]);
+
+  // Create an hourly lookup from the editable array for calculations
+  const hourlyLookup = useMemo(() => Object.fromEntries(hourlyRatesArr), [hourlyRatesArr]);
+
+  // rows: compute per-member months array [{ label, predictedFte, actualFte, revenue }, ...] and totalRevenue
+  const rows = useMemo(() => {
+    if (!project) return [];
+    return members.map((member) => {
+      const monthsArr = monthsToShow.map((m) => {
+        const dates = monthDatesMap[m.label] || [];
+
+        // predictedFte: calendar working days
+        let predictedFte = 0;
+        dates.forEach((d) => {
+          const dateStr = formatDDMMYYYY(d);
+          const join = parseDDMMYYYY(member.startDate);
+          const end = member.endDate ? parseDDMMYYYY(member.endDate) : parseDDMMYYYY(project.endDate);
+          if (!join || !end) return;
+          if (d < join || d > end) return;
+          if (isWeekend(d)) return;
+          if (isHolidayForLocation(member.location, dateStr)) return;
+          predictedFte += 1;
+        });
+
+        // actualFte: stored leaves override or default present
+        let actualFte = 0;
+        dates.forEach((d) => {
+          const dateStr = formatDDMMYYYY(d);
+          const join = parseDDMMYYYY(member.startDate);
+          const end = member.endDate ? parseDDMMYYYY(member.endDate) : parseDDMMYYYY(project.endDate);
+          if (!join || !end) return;
+          if (d < join || d > end) return;
+          if (isWeekend(d)) return;
+          if (isHolidayForLocation(member.location, dateStr)) return;
+          const stored = getStoredLeave(member.id, dateStr);
+          if (stored !== undefined && stored !== null) actualFte += Number(stored);
+          else actualFte += 1;
+        });
+
+        const hourly = hourlyLookup[member.role] ?? 15;
+        const revenue = actualFte * 8 * hourly;
+
+        return {
+          label: m.label,
+          predictedFte,
+          actualFte,
+          revenue,
+        };
+      });
+
+      const totalRevenue = monthsArr.reduce((s, c) => s + c.revenue, 0);
+      return {
+        id: member.id,
+        name: member.name,
+        role: member.role,
+        months: monthsArr,
+        totalRevenue,
+      };
+    });
+  }, [project, members, monthsToShow, monthDatesMap, holidaysState, hourlyLookup]);
+
+  // column totals
+  const columnTotals = useMemo(() => {
+    const totals = {};
+    monthsToShow.forEach((m) => {
+      totals[m.label] = { predictedFte: 0, actualFte: 0, revenue: 0 };
+    });
+    rows.forEach((r) => {
+      r.months.forEach((cell) => {
+        const t = totals[cell.label];
+        t.predictedFte += cell.predictedFte;
+        t.actualFte += cell.actualFte;
+        t.revenue += cell.revenue;
+      });
+    });
+    return totals;
+  }, [rows, monthsToShow]);
+
+  // total projection revenue to show in header
+  const totalProjectionRevenue = rows.reduce((s, r) => s + (r.totalRevenue || 0), 0);
+
+  // Guard early return — placed after hooks
+  if (!project) {
+    return <Typography>Please select a project first.</Typography>;
+  }
+
+  // Handler: update an hourly rate inline
+  const updateHourlyRate = (roleKey, value) => {
+    const parsed = Number(value);
+    const newArr = hourlyRatesArr.map(([r, v]) => (r === roleKey ? [r, isNaN(parsed) ? 0 : parsed] : [r, v]));
+    setHourlyRatesArr(newArr);
+  };
+
+  const resetRates = () =>
+    setHourlyRatesArr(
+      uniqueRoles.length
+        ? uniqueRoles.map((role) => [
+            role,
+            BASE_RATE_BY_ROLE.get(role) ?? 15,
+          ])
+        : [["Default Role", 15]]
+    );
+
+  // Colors used
+  // Remove gradients: use solid backgrounds for simpler, flatter look
+  const rateCardHeaderBg = "#E6F7EF";
+  const rateCardBodyBg = "#f6fbf7"; // soft non-white background for rate card body
+  const projHeaderFooterBg = "#f3fbf9"; // header & footer background (solid)
+
+  // Use theme tokens for consistent look
+
+  return (
+    <Box>
+      {/* Top header — Dashboard-style with back button */}
+      <Card elevation={2} sx={{ mb: 1 }}>
+        <CardContent sx={{ position: "relative", py: 1, pr: 2, pl: { xs: 5, sm: 6 } }}>
+          <IconButton
+            size="small"
+            onClick={() => navigate(-1)}
+            aria-label="Back"
+            sx={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)" }}
+          >
+            <ArrowBackIosNewIcon fontSize="small" />
+          </IconButton>
+
+          <Box sx={{ display: "flex", flexDirection: { xs: "column", sm: "row" }, alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+            <Box sx={{ display: "flex", gap: 1, alignItems: "center", minWidth: 0 }}>
+              <InsightsIcon color="primary" sx={{ fontSize: 20 }} />
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="h6" sx={{ fontSize: 16, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  Projections
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Incoming hours and utilization forecasts
+                </Typography>
+              </Box>
+            </Box>
+
+            <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+              <Chip size="small" label={`Projections: ${rows.length}`} variant="outlined" />
+              <Chip size="small" label={`Active: ${rows.filter((r) => r.totalRevenue > 0).length}`} variant="outlined" />
+            </Box>
+          </Box>
+        </CardContent>
+      </Card>
+
+      {/* Beautified Rate Card (no chart) */}
+      <Card sx={{ mb: 2, borderRadius: 2, boxShadow: 3 }}>
+        <Box
+          sx={{
+            px: 1.5,
+            py: 0.75,
+            borderTopLeftRadius: 8,
+            borderTopRightRadius: 8,
+            background: rateCardHeaderBg,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <Box>
+            <Typography sx={{ fontWeight: 800, fontSize: 13, color: "#052A2A" }}>Rate Card</Typography>
+            <Typography variant="caption" sx={{ color: "#053f3f", fontSize: 12 }}>
+              Editable hourly rates affect projections below
+            </Typography>
+          </Box>
+
+          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+            <Button
+              size="small"
+              variant="contained"
+              onClick={() => setRateCardOpen((s) => !s)}
+              startIcon={rateCardOpen ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+              sx={{ textTransform: "none", fontWeight: 700, fontSize: 13 }}
+            >
+              {rateCardOpen ? "Collapse" : "Open"}
+            </Button>
+          </Box>
+        </Box>
+
+        <CardContent sx={{ pt: 1.5, pb: 2, background: rateCardBodyBg }}>
+          <Collapse in={rateCardOpen}>
+            <Box sx={{ width: { xs: "100%", md: "50%" }, ml: 0, pr: 2, display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+              <Paper elevation={0} sx={{ borderRadius: 1, overflow: "hidden", background: rateCardBodyBg, width: "100%", p: 1 }}>
+                <TableContainer component={Paper} sx={{ background: rateCardBodyBg, boxShadow: "none" }}>
+                <Table size="small" sx={{ minWidth: 520 }}>
+                  <TableHead>
+                    <TableRow sx={{ background: "#eaf8f0" }}>
+                      <TableCell
+                        align="center"
+                        sx={{ fontWeight: 800, fontSize: 12, color: "#0b3b3b" }}
+                      >
+                        Role
+                      </TableCell>
+                      <TableCell
+                        align="center"
+                        sx={{ fontWeight: 800, fontSize: 12, color: "#0b3b3b" }}
+                      >
+                        Hourly ($/hr)
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+
+                  <TableBody>
+                    {hourlyRatesArr.map(([role, rate]) => (
+                      <TableRow key={role} sx={{ background: "transparent" }}>
+                        <TableCell sx={{ whiteSpace: "nowrap", fontSize: 13, color: (t) => t.palette.text.primary }}>{role}</TableCell>
+                        <TableCell sx={{ textAlign: "center", fontSize: 13 }}>
+                          <TextField
+                            size="small"
+                            value={String(rate)}
+                            onChange={(e) => updateHourlyRate(role, e.target.value)}
+                            inputProps={{
+                              inputMode: "numeric",
+                              pattern: "[0-9]*",
+                              style: { fontSize: 13, padding: "6px 8px", textAlign: "center" },
+                            }}
+                            variant="outlined"
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+
+              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", p: 2, background: rateCardBodyBg }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12 }}>
+                  Tip: update rates to immediately affect the projections below.
+                </Typography>
+
+                <Stack direction="row" spacing={1}>
+                  <Button variant="outlined" size="small" onClick={resetRates} sx={{ textTransform: "none" }}>
+                    Reset
+                  </Button>
+                  <Button
+                    variant="contained"
+                    size="small"
+                    onClick={() => {
+                      // temporary "save" UX: keep rates in state; in real app you'd persist to server
+                      setRateCardOpen(false);
+                      setTimeout(() => setRateCardOpen(true), 220);
+                    }}
+                    sx={{ textTransform: "none", fontWeight: 700 }}
+                  >
+                    Save
+                  </Button>
+                </Stack>
+              </Box>
+            </Paper>
+          </Box>
+          </Collapse>
+        </CardContent>
+      </Card>
+
+      {/* Main projections table with colored header/footer and centered headers/cells */}
+      <Card>
+        <CardContent>
+          <TableContainer component={Paper} sx={{ maxHeight: "55vh",  scrollbarWidth: 'thin',
+    scrollbarColor: '#c4c4c4 transparent',
+
+    /* Chrome / Edge / Safari */
+    '&::-webkit-scrollbar': {
+      width: '6px',
+    },
+    '&::-webkit-scrollbar-track': {
+      background: 'transparent',
+    },
+    '&::-webkit-scrollbar-thumb': {
+      backgroundColor: '#c4c4c4',
+      borderRadius: '8px',
+    },
+    '&::-webkit-scrollbar-thumb:hover': {
+      backgroundColor: '#9e9e9e',
+    }, }}>
+            <Table size="small" stickyHeader sx={{ minWidth: 900, fontSize: 12 }}>
+              {/* Header with dark background - SAME color used for footer */}
+              <TableHead>
+                <TableRow sx={{ background: theme.palette.grey[900], '& th': { background: theme.palette.grey[900], position: 'sticky', top: 0, zIndex: theme.zIndex.appBar } }}>
+                  <TableCell align="center" sx={{ fontWeight: 700, color: theme.palette.common.white, fontSize: 12 }}>
+                    Member
+                  </TableCell>
+                  <TableCell align="center" sx={{ fontWeight: 700, color: theme.palette.common.white, fontSize: 12 }}>
+                    Role
+                  </TableCell>
+                  {monthsToShow.map((m) => (
+                    <TableCell
+                      align="center"
+                      key={m.label}
+                      sx={{ textAlign: "center", fontWeight: 700, color: theme.palette.common.white, fontSize: 12 }}
+                    >
+                      {m.label}
+                    </TableCell>
+                  ))}
+                  <TableCell align="center" sx={{ fontWeight: 700, color: theme.palette.common.white, fontSize: 12 }}>
+                    Grand Total ($)
+                  </TableCell>
+                  <TableCell align="center" sx={{ fontWeight: 700, color: theme.palette.common.white, fontSize: 12 }} />
+                </TableRow>
+              </TableHead>
+
+              <TableBody>
+                {rows.map((r) => (
+                  <React.Fragment key={r.id}>
+                    <TableRow hover>
+                      <TableCell align="center" sx={{ whiteSpace: "nowrap", fontWeight: 600, fontSize: 12 }}>{r.name}</TableCell>
+                      <TableCell align="center" sx={{ fontSize: 12 }}>{r.role}</TableCell>
+
+                      {r.months.map((cell) => (
+                        <TableCell key={cell.label} align="center" sx={{ fontSize: 12 }}>
+                          <Typography variant="caption" color="text.secondary" display="block" sx={{ fontSize: 11 }}>
+                            Pred: {cell.predictedFte.toFixed(1)}
+                          </Typography>
+                          <Typography sx={{ fontWeight: 700, fontSize: 12, color: (t) => t.palette.text.primary }}>Act: {cell.actualFte.toFixed(1)}</Typography>
+                          <Typography sx={{ fontSize: 12, color: (t) => t.palette.text.primary }}>${Math.round(cell.revenue)}</Typography>
+                        </TableCell>
+                      ))}
+
+                      <TableCell align="center" sx={{ fontSize: 13, color: (t) => t.palette.text.primary }}>${Math.round(r.totalRevenue)}</TableCell>
+
+                      <TableCell align="center">
+                        <IconButton size="small" onClick={() => toggleExpand(r.id)} aria-label="Expand">
+                          {expandedMemberId === r.id ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+
+                    {/* Expanded details row */}
+                    <TableRow>
+                      <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={4 + monthsToShow.length}>
+                        <Collapse in={expandedMemberId === r.id} timeout="auto" unmountOnExit>
+                          <Box sx={{ margin: 2 }}>
+                            <Typography variant="subtitle2" sx={{ mb: 1, fontSize: 13 }}>
+                              Monthly breakdown — {r.name}
+                            </Typography>
+
+                            <Table size="small" sx={{ minWidth: 800, fontSize: 12 }}>
+                              <TableHead>
+                                <TableRow sx={{ background: projHeaderFooterBg }}>
+                                  <TableCell align="center" sx={{ fontWeight: 700, fontSize: 12 }}>Month</TableCell>
+                                  <TableCell align="center" sx={{ fontWeight: 700, fontSize: 12 }}>Predicted FTE</TableCell>
+                                  <TableCell align="center" sx={{ fontWeight: 700, fontSize: 12 }}>Actual FTE</TableCell>
+                                  <TableCell align="center" sx={{ fontWeight: 700, fontSize: 12 }}>Revenue ($)</TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
+                                {r.months.map((c) => (
+                                  <TableRow key={c.label}>
+                                    <TableCell align="center" sx={{ fontSize: 12 }}>{c.label}</TableCell>
+                                    <TableCell align="center" sx={{ fontSize: 12 }}>{c.predictedFte.toFixed(1)}</TableCell>
+                                    <TableCell align="center" sx={{ fontSize: 12 }}>{c.actualFte.toFixed(1)}</TableCell>
+                                    <TableCell align="center" sx={{ fontSize: 12 }}>{Math.round(c.revenue)}</TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </Box>
+                        </Collapse>
+                      </TableCell>
+                    </TableRow>
+                  </React.Fragment>
+                ))}
+
+                {/* Grand totals row with SAME color as header */}
+                <TableRow
+                  sx={{
+                    background: theme.palette.grey[900],
+                  }}
+                >
+                  <TableCell align="center" sx={{ fontWeight: 700, fontSize: 12, color: theme.palette.common.white }}>Grand Total</TableCell>
+                  <TableCell align="center" sx={{ color: theme.palette.common.white }} />
+                  {monthsToShow.map((m) => (
+                    <TableCell key={m.label} align="center" sx={{ fontWeight: 700, fontSize: 12, color: theme.palette.common.white }}>
+                      Pred: {columnTotals[m.label].predictedFte.toFixed(1)}
+                      <br />
+                      Act: {columnTotals[m.label].actualFte.toFixed(1)}
+                      <br />
+                      ${Math.round(columnTotals[m.label].revenue)}
+                    </TableCell>
+                  ))}
+                  <TableCell align="center" sx={{ fontWeight: 700, fontSize: 12, color: theme.palette.common.white }}>
+                    ${Math.round(Object.values(columnTotals).reduce((s, c) => s + c.revenue, 0))}
+                  </TableCell>
+                  <TableCell align="center" sx={{ color: theme.palette.common.white }} />
+                </TableRow>
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </CardContent>
+      </Card>
+    </Box>
+  );
+}
