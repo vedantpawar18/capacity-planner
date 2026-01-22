@@ -36,8 +36,7 @@ import { addHoliday, deleteHoliday, updateHoliday, selectLocation } from "../fea
 import { formatDDMMYYYY, parseDDMMYYYY } from "../utils/dateUtils";
 import { useNavigate } from "react-router-dom";
 
-const LOCATIONS = ["Pune", "Noida", "Bangalore", "Chennai", "Hyderabad"];
-const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+import { LOCATIONS, MONTHS } from "../constants";
 
 function monthOfDDMMYYYY(ddmm) {
   if (!ddmm) return null;

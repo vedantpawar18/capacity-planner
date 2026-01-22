@@ -19,12 +19,13 @@ import {
   Button,
   Stack,
   Chip,
+  InputAdornment,
 } from "@mui/material";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import InsightsIcon from "@mui/icons-material/Insights";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
-import { useSelector } from "react-redux";
+import { useSelector, useDispatch } from "react-redux";
 import { useNavigate } from "react-router-dom";
 import {
   formatDDMMYYYY,
@@ -32,17 +33,9 @@ import {
   isWeekend,
   generateDateRange,
 } from "../utils/dateUtils";
-import { selectSelectedProject } from "../features/projectsSlice";
+import { selectSelectedProject, updateProject } from "../features/projectsSlice";
 
-// baseline default rates if a role doesn't have a stored value
-const BASE_RATE_BY_ROLE = new Map([
-  ["Lead Senior Engineer - Mobile Dev", 20],
-  ["Mid Level Engineer - Mobile Dev", 10],
-  ["Senior Engineer - Mobile Dev", 15],
-  ["Senior Quality Engineer", 15],
-  ["Backend Engineer", 18],
-  ["Frontend Engineer", 17],
-]);
+import { BASE_RATE_BY_ROLE } from "../constants";
 
 function monthLabel(monthIndex, year) {
   return new Date(year, monthIndex, 1).toLocaleString(undefined, {
@@ -55,6 +48,7 @@ export default function ProjectionsPage() {
   const project = useSelector(selectSelectedProject);
   const holidaysState = useSelector((s) => s.holidays);
   const navigate = useNavigate();
+  const dispatch = useDispatch();
 
   // stable members array
   const members = project?.members || [];
@@ -89,6 +83,20 @@ export default function ProjectionsPage() {
 
   // collapse state for Rate Card (closed by default to keep area small)
   const [rateCardOpen, setRateCardOpen] = useState(false);
+
+  // Buffer and Discount from Redux (centrally managed)
+  const buffer = project?.buffer ?? 2;
+  const discount = project?.discount ?? 0;
+
+  // Local state for input fields to allow empty values temporarily
+  const [bufferInput, setBufferInput] = useState(String(buffer || ""));
+  const [discountInput, setDiscountInput] = useState(String(discount || ""));
+
+  // Sync local state with Redux when project changes
+  React.useEffect(() => {
+    setBufferInput(buffer === 0 ? "" : String(buffer));
+    setDiscountInput(discount === 0 ? "" : String(discount));
+  }, [buffer, discount]);
 
   // UI state for expanded member row
   const [expandedMemberId, setExpandedMemberId] = useState(null);
@@ -194,7 +202,10 @@ export default function ProjectionsPage() {
         });
 
         const hourly = hourlyLookup[member.role] ?? 15;
-        const revenue = actualFte * 8 * hourly;
+        const baseRevenue = actualFte * 8 * hourly;
+        // Subtract buffer days per team member monthly (buffer days * 8 hours * hourly rate)
+        const bufferRevenue = buffer * 8 * hourly;
+        const revenue = baseRevenue - bufferRevenue;
 
         return {
           label: m.label,
@@ -213,9 +224,9 @@ export default function ProjectionsPage() {
         totalRevenue,
       };
     });
-  }, [project, members, monthsToShow, monthDatesMap, holidaysState, hourlyLookup]);
+  }, [project, members, monthsToShow, monthDatesMap, holidaysState, hourlyLookup, buffer]);
 
-  // column totals
+  // column totals (with discount applied to monthly totals)
   const columnTotals = useMemo(() => {
     const totals = {};
     monthsToShow.forEach((m) => {
@@ -229,8 +240,13 @@ export default function ProjectionsPage() {
         t.revenue += cell.revenue;
       });
     });
+    // Apply discount percentage to monthly totals
+    const discountPercent = Number(discount) || 0;
+    Object.keys(totals).forEach((monthLabel) => {
+      totals[monthLabel].revenue = totals[monthLabel].revenue * (1 - discountPercent / 100);
+    });
     return totals;
-  }, [rows, monthsToShow]);
+  }, [rows, monthsToShow, discount]);
 
   // total projection revenue to show in header
   const totalProjectionRevenue = rows.reduce((s, r) => s + (r.totalRevenue || 0), 0);
@@ -242,12 +258,12 @@ export default function ProjectionsPage() {
 
   // Handler: update an hourly rate inline
   const updateHourlyRate = (roleKey, value) => {
-    const parsed = Number(value);
-    const newArr = hourlyRatesArr.map(([r, v]) => (r === roleKey ? [r, isNaN(parsed) ? 0 : parsed] : [r, v]));
+    const parsed = value === "" || isNaN(Number(value)) ? 0 : Number(value);
+    const newArr = hourlyRatesArr.map(([r, v]) => (r === roleKey ? [r, parsed] : [r, v]));
     setHourlyRatesArr(newArr);
   };
 
-  const resetRates = () =>
+  const resetRates = () => {
     setHourlyRatesArr(
       uniqueRoles.length
         ? uniqueRoles.map((role) => [
@@ -256,6 +272,28 @@ export default function ProjectionsPage() {
           ])
         : [["Default Role", 15]]
     );
+    if (project) {
+      dispatch(updateProject({ projectId: project.id, updates: { buffer: 2, discount: 0 } }));
+    }
+  };
+
+  // Handlers for buffer and discount updates
+  const handleBufferChange = (value) => {
+    setBufferInput(value);
+    const parsed = Number(value);
+    if (project) {
+      dispatch(updateProject({ projectId: project.id, updates: { buffer: value === "" || isNaN(parsed) ? 0 : parsed } }));
+    }
+  };
+
+  const handleDiscountChange = (value) => {
+    setDiscountInput(value);
+    const parsed = Number(value);
+    const clamped = value === "" || isNaN(parsed) ? 0 : Math.max(0, Math.min(100, parsed));
+    if (project) {
+      dispatch(updateProject({ projectId: project.id, updates: { discount: clamped } }));
+    }
+  };
 
   // Colors used
   // Remove gradients: use solid backgrounds for simpler, flatter look
@@ -336,75 +374,140 @@ export default function ProjectionsPage() {
 
         <CardContent sx={{ pt: 1.5, pb: 2, background: rateCardBodyBg }}>
           <Collapse in={rateCardOpen}>
-            <Box sx={{ width: { xs: "100%", md: "50%" }, ml: 0, pr: 2, display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
-              <Paper elevation={0} sx={{ borderRadius: 1, overflow: "hidden", background: rateCardBodyBg, width: "100%", p: 1 }}>
-                <TableContainer component={Paper} sx={{ background: rateCardBodyBg, boxShadow: "none" }}>
-                <Table size="small" sx={{ minWidth: 520 }}>
-                  <TableHead>
-                    <TableRow sx={{ background: "#eaf8f0" }}>
-                      <TableCell
-                        align="center"
-                        sx={{ fontWeight: 800, fontSize: 12, color: "#0b3b3b" }}
-                      >
-                        Role
-                      </TableCell>
-                      <TableCell
-                        align="center"
-                        sx={{ fontWeight: 800, fontSize: 12, color: "#0b3b3b" }}
-                      >
-                        Hourly ($/hr)
-                      </TableCell>
-                    </TableRow>
-                  </TableHead>
+            <Box sx={{ display: "flex", flexDirection: { xs: "column", md: "row" }, gap: 2, width: "100%" }}>
+              {/* Left Half: Rates Table */}
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Paper elevation={0} sx={{ borderRadius: 1, overflow: "hidden", background: rateCardBodyBg, width: "100%", p: 1 }}>
+                  <TableContainer component={Paper} sx={{ background: rateCardBodyBg, boxShadow: "none" }}>
+                    <Table size="small" sx={{ minWidth: 300 }}>
+                      <TableHead>
+                        <TableRow sx={{ background: "#eaf8f0" }}>
+                          <TableCell
+                            align="center"
+                            sx={{ fontWeight: 800, fontSize: 12, color: "#0b3b3b" }}
+                          >
+                            Role
+                          </TableCell>
+                          <TableCell
+                            align="center"
+                            sx={{ fontWeight: 800, fontSize: 12, color: "#0b3b3b" }}
+                          >
+                            Hourly ($/hr)
+                          </TableCell>
+                        </TableRow>
+                      </TableHead>
 
-                  <TableBody>
-                    {hourlyRatesArr.map(([role, rate]) => (
-                      <TableRow key={role} sx={{ background: "transparent" }}>
-                        <TableCell sx={{ whiteSpace: "nowrap", fontSize: 13, color: (t) => t.palette.text.primary }}>{role}</TableCell>
-                        <TableCell sx={{ textAlign: "center", fontSize: 13 }}>
-                          <TextField
-                            size="small"
-                            value={String(rate)}
-                            onChange={(e) => updateHourlyRate(role, e.target.value)}
-                            inputProps={{
-                              inputMode: "numeric",
-                              pattern: "[0-9]*",
-                              style: { fontSize: 13, padding: "6px 8px", textAlign: "center" },
-                            }}
-                            variant="outlined"
-                          />
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-
-              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", p: 2, background: rateCardBodyBg }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12 }}>
-                  Tip: update rates to immediately affect the projections below.
-                </Typography>
-
-                <Stack direction="row" spacing={1}>
-                  <Button variant="outlined" size="small" onClick={resetRates} sx={{ textTransform: "none" }}>
-                    Reset
-                  </Button>
-                  <Button
-                    variant="contained"
-                    size="small"
-                    onClick={() => {
-                      // temporary "save" UX: keep rates in state; in real app you'd persist to server
-                      setRateCardOpen(false);
-                      setTimeout(() => setRateCardOpen(true), 220);
-                    }}
-                    sx={{ textTransform: "none", fontWeight: 700 }}
-                  >
-                    Save
-                  </Button>
-                </Stack>
+                      <TableBody>
+                        {hourlyRatesArr.map(([role, rate]) => (
+                          <TableRow key={role} sx={{ background: "transparent" }}>
+                            <TableCell sx={{ whiteSpace: "nowrap", fontSize: 13, color: (t) => t.palette.text.primary }}>{role}</TableCell>
+                            <TableCell sx={{ textAlign: "center", fontSize: 13 }}>
+                              <TextField
+                                size="small"
+                                value={rate === 0 ? "" : String(rate)}
+                                onChange={(e) => updateHourlyRate(role, e.target.value)}
+                                onFocus={(e) => e.target.select()}
+                                inputProps={{
+                                  inputMode: "numeric",
+                                  pattern: "[0-9]*",
+                                  style: { fontSize: 12, padding: "4px 6px", textAlign: "center", height: "28px" },
+                                }}
+                                sx={{ width: "80px", "& .MuiInputBase-root": { height: "32px" } }}
+                                variant="outlined"
+                              />
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
               </Box>
-            </Paper>
-          </Box>
+
+              {/* Right Half: Buffer & Discount */}
+              <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+                <Paper elevation={0} sx={{ borderRadius: 1, background: rateCardBodyBg, width: "100%", p: 2 }}>
+                  {/* Buffer Section */}
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 1, mb: 2 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700, fontSize: 13, color: "#0b3b3b" }}>
+                      Buffer (per team member)
+                    </Typography>
+                    <Box sx={{ width: "33.33%" }}>
+                      <TextField
+                        size="small"
+                        type="number"
+                        label="Buffer Days"
+                        value={bufferInput}
+                        onChange={(e) => handleBufferChange(e.target.value)}
+                        onFocus={(e) => e.target.select()}
+                        inputProps={{
+                          inputMode: "numeric",
+                          style: { fontSize: 12, padding: "4px 6px", height: "28px" },
+                        }}
+                        sx={{ width: "100%", "& .MuiInputBase-root": { height: "32px" } }}
+                        fullWidth
+                      />
+                    </Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12 }}>
+                      Buffer days per team member, calculated monthly (days × 8 hours × hourly rate)
+                    </Typography>
+                  </Box>
+
+                  {/* Discount Section */}
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700, fontSize: 13, color: "#0b3b3b" }}>
+                      Discount
+                    </Typography>
+                    <Box sx={{ width: "33.33%" }}>
+                      <TextField
+                        size="small"
+                        type="number"
+                        label="Discount Percentage"
+                        value={discountInput}
+                        onChange={(e) => handleDiscountChange(e.target.value)}
+                        onFocus={(e) => e.target.select()}
+                        inputProps={{
+                          inputMode: "numeric",
+                          style: { fontSize: 12, padding: "4px 6px", height: "28px" },
+                        }}
+                        sx={{ width: "100%", "& .MuiInputBase-root": { height: "32px" } }}
+                        fullWidth
+                        InputProps={{
+                          endAdornment: <InputAdornment position="end">%</InputAdornment>,
+                        }}
+                      />
+                    </Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12 }}>
+                      Discount percentage applied to total monthly projection
+                    </Typography>
+                  </Box>
+                </Paper>
+              </Box>
+            </Box>
+
+            {/* Footer with actions */}
+            <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", p: 2, background: rateCardBodyBg, mt: 2 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12 }}>
+                Tip: update rates, buffer, and discount to immediately affect the projections below.
+              </Typography>
+
+              <Stack direction="row" spacing={1}>
+                <Button variant="outlined" size="small" onClick={resetRates} sx={{ textTransform: "none" }}>
+                  Reset
+                </Button>
+                <Button
+                  variant="contained"
+                  size="small"
+                  onClick={() => {
+                    // Close the rate card after saving
+                    setRateCardOpen(false);
+                  }}
+                  sx={{ textTransform: "none", fontWeight: 700 }}
+                >
+                  Save
+                </Button>
+              </Stack>
+            </Box>
           </Collapse>
         </CardContent>
       </Card>

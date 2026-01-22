@@ -9,7 +9,7 @@ import {
   Grid,
 } from "@mui/material";
 import { formatDDMMYYYY, parseDDMMYYYY } from "../utils/dateUtils";
-import { LOCATIONS, ROLE_OPTIONS } from "../constants/dashboardConstants";
+import { LOCATIONS, ROLE_OPTIONS } from "../constants";
 
 export default function MemberDialog({ open, onClose, onSubmit, initial, project }) {
   const [name, setName] = useState("");
